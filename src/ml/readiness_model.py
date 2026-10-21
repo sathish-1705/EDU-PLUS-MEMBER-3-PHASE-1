@@ -16,7 +16,7 @@ FEATURE_COLUMNS = [
 
 
 def load_student_data(path=None):
-    """Load the fictional student dataset."""
+    """Load the fictional student dataset used for ML profiling."""
 
     if path is None:
         path = (
@@ -24,6 +24,13 @@ def load_student_data(path=None):
             / "data"
             / "raw"
             / "students.csv"
+        )
+
+    path = Path(path)
+
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Student dataset not found: {path}"
         )
 
     return pd.read_csv(path)
@@ -46,11 +53,11 @@ def prepare_features(df):
     return df[FEATURE_COLUMNS].astype(float)
 
 
-def calculate_readiness_profiles(df):
+def build_readiness_model(df):
     """
-    Group students into three data-driven readiness profiles.
+    Train the KMeans readiness profiling model.
 
-    This is unsupervised profiling, not predictive career forecasting.
+    The model uses standardized student-development features.
     """
 
     features = prepare_features(df)
@@ -66,15 +73,39 @@ def calculate_readiness_profiles(df):
 
     clusters = model.fit_predict(scaled_features)
 
+    return scaler, model, clusters, scaled_features
+
+
+def calculate_readiness_profiles(df):
+    """
+    Group students into three data-driven readiness profiles.
+
+    This is unsupervised profiling, not predictive career forecasting.
+    """
+
     result = df.copy()
+
+    scaler, model, clusters, scaled_features = build_readiness_model(df)
+
     result["ml_cluster"] = clusters
 
-    cluster_means = (
-        result.groupby("ml_cluster")[FEATURE_COLUMNS]
-        .mean()
+    # Calculate cluster scores using standardized features
+    # so that CGPA, attendance, projects, etc. contribute
+    # on comparable scales.
+    scaled_df = pd.DataFrame(
+        scaled_features,
+        columns=FEATURE_COLUMNS,
+        index=result.index
     )
 
-    cluster_scores = cluster_means.mean(axis=1)
+    scaled_df["ml_cluster"] = clusters
+
+    cluster_scores = (
+        scaled_df
+        .groupby("ml_cluster")[FEATURE_COLUMNS]
+        .mean()
+        .mean(axis=1)
+    )
 
     ordered_clusters = cluster_scores.sort_values().index.tolist()
 
@@ -92,7 +123,10 @@ def calculate_readiness_profiles(df):
 
 
 def analyze_student(student_id, df=None):
-    """Return the ML readiness profile for one student."""
+    """
+    Return the ML readiness profile for a student
+    already present in the prototype dataset.
+    """
 
     if df is None:
         df = load_student_data()
@@ -116,6 +150,79 @@ def analyze_student(student_id, df=None):
         "ml_readiness_profile": str(
             row["ml_readiness_profile"]
         ),
+    }
+
+
+def analyze_student_features(
+    student_id,
+    student_data,
+    df=None
+):
+    """
+    Calculate the ML readiness profile for a provided student.
+
+    The submitted student does not need to exist in the
+    prototype dataset. The prototype dataset is used as the
+    reference population for the KMeans model.
+    """
+
+    if df is None:
+        df = load_student_data()
+
+    # Train the readiness model using the reference dataset.
+    scaler, model, clusters, scaled_features = build_readiness_model(df)
+
+    # Determine readiness labels from the reference population.
+    scaled_df = pd.DataFrame(
+        scaled_features,
+        columns=FEATURE_COLUMNS
+    )
+
+    scaled_df["ml_cluster"] = clusters
+
+    cluster_scores = (
+        scaled_df
+        .groupby("ml_cluster")[FEATURE_COLUMNS]
+        .mean()
+        .mean(axis=1)
+    )
+
+    ordered_clusters = cluster_scores.sort_values().index.tolist()
+
+    profile_mapping = {
+        ordered_clusters[0]: "Developing",
+        ordered_clusters[1]: "Emerging",
+        ordered_clusters[2]: "Ready",
+    }
+
+    # Convert submitted student information into the same
+    # feature structure used to train the model.
+    student_frame = pd.DataFrame(
+        [
+            {
+                column: float(student_data[column])
+                for column in FEATURE_COLUMNS
+            }
+        ]
+    )
+
+    student_features = prepare_features(student_frame)
+
+    # Scale the submitted student's features using the scaler
+    # fitted on the reference dataset.
+    scaled_student = scaler.transform(student_features)
+
+    # Predict the nearest KMeans cluster.
+    predicted_cluster = int(
+        model.predict(scaled_student)[0]
+    )
+
+    return {
+        "student_id": str(student_id),
+        "ml_cluster": predicted_cluster,
+        "ml_readiness_profile": profile_mapping[
+            predicted_cluster
+        ],
     }
 
 
